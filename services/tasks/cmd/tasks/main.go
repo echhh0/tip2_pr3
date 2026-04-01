@@ -1,0 +1,55 @@
+package main
+
+import (
+	"net/http"
+	"os"
+
+	"tip2_pr3/services/tasks/internal/client/authclient"
+	httpapi "tip2_pr3/services/tasks/internal/http"
+	"tip2_pr3/services/tasks/internal/service"
+	sharedlogger "tip2_pr3/shared/logger"
+	"tip2_pr3/shared/middleware"
+
+	"go.uber.org/zap"
+)
+
+func main() {
+	port := getEnv("TASKS_PORT", "8082")
+	authGRPCAddr := getEnv("AUTH_GRPC_ADDR", "localhost:50051")
+
+	logger, err := sharedlogger.New("tasks")
+	if err != nil {
+		panic(err)
+	}
+	defer func() { _ = logger.Sync() }()
+
+	taskService := service.New()
+
+	authClient, err := authclient.New(authGRPCAddr, logger)
+	if err != nil {
+		logger.Fatal("create auth client failed", zap.Error(err), zap.String("component", "auth_client"))
+	}
+	defer authClient.Close()
+
+	handler := httpapi.New(taskService, authClient, logger)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+
+	app := middleware.RequestID(middleware.AccessLog(logger)(mux))
+
+	addr := ":" + port
+	logger.Info("tasks service starting", zap.String("address", addr), zap.String("auth_grpc_addr", authGRPCAddr))
+
+	if err := http.ListenAndServe(addr, app); err != nil {
+		logger.Fatal("tasks service failed", zap.Error(err), zap.String("component", "http_server"))
+	}
+}
+
+func getEnv(key, fallback string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	return v
+}
